@@ -23,14 +23,17 @@ func (m Model) View() string {
 	statusBar := m.renderStatusBar()
 
 	var body string
-	if m.layout.mode == layoutNarrow {
+	switch m.layout.mode {
+	case layoutZen:
+		body = m.renderRightPane(m.layout.rightWidth, m.layout.bodyHeight)
+	case layoutNarrow:
 		tabs := m.renderNarrowTabs()
 		if m.focus == focusList {
 			body = lipgloss.JoinVertical(lipgloss.Left, tabs, m.renderLeftPane(m.layout.leftWidth, m.layout.bodyHeight))
 		} else {
 			body = lipgloss.JoinVertical(lipgloss.Left, tabs, m.renderRightPane(m.layout.rightWidth, m.layout.bodyHeight))
 		}
-	} else {
+	default:
 		left := m.renderLeftPane(m.layout.leftWidth, m.layout.bodyHeight)
 		right := m.renderRightPane(m.layout.rightWidth, m.layout.bodyHeight)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
@@ -125,7 +128,11 @@ func (m Model) renderLeftPane(outerW, outerH int) string {
 			if i == m.selected {
 				prefix = "▸ "
 			}
-			label := prefix + n.Title
+			label := prefix
+			if m.showNotebookPrefix && m.filterNotebook == "" && n.Notebook != "" {
+				label += formatNotebookPrefix(n.Notebook)
+			}
+			label += n.Title
 			label = truncateDisplay(label, contentW)
 			label = padOrTruncatePlain(label, contentW)
 			if i == m.selected {
@@ -148,6 +155,19 @@ func (m Model) renderLeftPane(outerW, outerH int) string {
 		boxStyle = m.styles.paneFocus
 	}
 	return boxStyle.Width(boxW).Height(innerH).Render(strings.Join(lines, "\n"))
+}
+
+// formatNotebookPrefix returns the compact up-to-3-rune notebook prefix.
+func formatNotebookPrefix(notebook string) string {
+	nb := strings.TrimSpace(notebook)
+	if nb == "" {
+		return ""
+	}
+	runes := []rune(nb)
+	if len(runes) > 3 {
+		runes = runes[:3]
+	}
+	return string(runes) + "/"
 }
 
 func (m Model) renderRightPane(outerW, outerH int) string {
@@ -206,9 +226,41 @@ func (m Model) renderRightPane(outerW, outerH int) string {
 
 	divider := m.styles.subtle.Render(strings.Repeat("─", contentW))
 
-	editorView := m.editor.View()
-	content := lipgloss.JoinVertical(lipgloss.Left, titleLine, metaLine, divider, editorView)
+	parts := []string{titleLine, metaLine, divider}
+	if m.find.active {
+		parts = append(parts, m.renderFindBar(contentW))
+	}
+	parts = append(parts, m.editor.View())
+	if innerH >= 6 {
+		parts = append(parts, m.renderEditorFooter(contentW))
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	return boxStyle.Width(boxW).Height(innerH).Render(content)
+}
+
+func (m Model) renderEditorFooter(width int) string {
+	line, col := editorCursorPos(m.editor)
+	words, chars, _ := countEditorStats(m.editor.Value())
+	left := fmt.Sprintf("Ln %d, Col %d · %d pal · %d chars", line+1, col+1, words, chars)
+
+	var tags []string
+	if m.showLineNumbers {
+		tags = append(tags, "Linhas")
+	}
+	if m.zenMode {
+		tags = append(tags, "ZEN")
+	}
+	right := strings.Join(tags, " · ")
+	if right == "" {
+		right = "Ctrl+F buscar · Ctrl+Z desfazer"
+	}
+
+	gap := width - ansi.StringWidth(left) - ansi.StringWidth(right)
+	if gap < 1 {
+		return m.styles.subtle.Render(truncateDisplay(left, width))
+	}
+	return m.styles.subtle.Render(left + strings.Repeat(" ", gap) + right)
 }
 
 func (m Model) renderStatusBar() string {
@@ -220,9 +272,9 @@ func (m Model) renderStatusBar() string {
 			text = m.styles.saved.Render(m.statusMsg)
 		}
 	} else if m.focus == focusEditor {
-		text = "[Editor] Ctrl+S salvar · Ctrl+E $EDITOR · Esc/Shift+Tab voltar à lista · Ctrl+C sair"
+		text = "[Editor] Ctrl+S salvar · Ctrl+Z/Y desfazer · Ctrl+F/R buscar · Alt+X check · Alt+Z zen · Ctrl+E $EDITOR · Esc lista"
 	} else {
-		text = "[Lista] j/k mover · Enter/Tab editar · n nova · m mover · E $EDITOR · d lixeira · b cadernos · c config · / busca · ? ajuda · q sair"
+		text = "[Lista] j/k mover · Enter editar · n nova · m mover · z zen · Y copiar · E $EDITOR · d lixeira · b cadernos · c config · / busca · ? ajuda · q sair"
 	}
 	return m.styles.statusBar.Width(m.layout.width).Render(truncateDisplay(text, m.layout.width-2))
 }

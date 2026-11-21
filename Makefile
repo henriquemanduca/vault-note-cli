@@ -38,8 +38,8 @@ build-all: ## Cross-compilation de release para Linux, macOS e Windows em dist/
 checksums: ## Gera dist/checksums.txt com SHA-256 dos binários
 	@cd dist && sha256sum $(APP)-* > checksums.txt
 
-run: ## Executa a partir do código-fonte usando banco de configurações temporário
-	VAULT_NOTE_CLI_DB=/tmp/$(APP)-dev.db $(GO) run ./cmd/$(APP) $(ARGS)
+run: ## Executa a partir do código-fonte usando config YAML temporário
+	VAULT_NOTE_CLI_CONFIG=/tmp/$(APP)-dev.yaml $(GO) run ./cmd/$(APP) $(ARGS)
 
 test: ## Executa suíte de testes com detector de race e sem cache
 	$(GO) test -race -count=1 ./...

@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/cursor"
@@ -9,7 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/hmanduca/vault-note-cli/internal/db"
+	"github.com/hmanduca/vault-note-cli/internal/settings"
 	"github.com/hmanduca/vault-note-cli/internal/vault"
 )
 
@@ -24,11 +26,12 @@ const (
 type Options struct {
 	InitialNotebook    string
 	DisableCursorBlink bool
+	ClipboardWriter    io.Writer // optional writer for OSC 52 output (defaults to os.Stderr)
 }
 
 // Model holds all state for the Elm-architecture Bubble Tea TUI.
 type Model struct {
-	settingsStore *db.Store
+	settingsStore *settings.Store
 	vault         *vault.Vault
 	vaultPath     string
 
@@ -37,6 +40,11 @@ type Model struct {
 	layout layoutMetrics
 
 	focus focusPane
+
+	// Presentation preferences.
+	showNotebookPrefix bool
+	showLineNumbers    bool
+	zenMode            bool
 
 	// Data and active filters.
 	notes          []vault.Note
@@ -52,7 +60,10 @@ type Model struct {
 	editor        textarea.Model
 	loadedNoteID  string
 	loadedContent string
+	loadedHash    string
 	dirty         bool
+	history       editorHistory
+	find          findState
 
 	// Encapsulated modal state.
 	modal modalState
@@ -66,14 +77,15 @@ type Model struct {
 // NewModel constructs a fully initialized TUI model.
 // If v is nil (no vault configured yet), it automatically opens the Settings
 // modal in onboarding mode so the user can configure the vault path immediately.
-func NewModel(settingsStore *db.Store, v *vault.Vault, opts Options) Model {
+func NewModel(settingsStore *settings.Store, v *vault.Vault, opts Options) Model {
 	p := graphitePalette()
 	st := newStyles(p)
 
 	ed := textarea.New()
-	ed.Placeholder = "Comece a digitar sua anotação... (Ctrl+S salva · Ctrl+E abre $EDITOR · Esc volta à lista)"
+	ed.Placeholder = "Comece a digitar sua anotação... (Ctrl+S salva · Ctrl+F busca · Ctrl+E $EDITOR · Esc lista)"
 	ed.ShowLineNumbers = false
 	ed.CharLimit = 0
+	ed.MaxHeight = 10000
 	ed.Prompt = ""
 	applyTextareaTheme(&ed, p)
 	if opts.DisableCursorBlink {
@@ -95,17 +107,28 @@ func NewModel(settingsStore *db.Store, v *vault.Vault, opts Options) Model {
 	}
 
 	m := Model{
-		settingsStore:  settingsStore,
-		vault:          v,
-		vaultPath:      vp,
-		opts:           opts,
-		styles:         st,
-		layout:         computeLayout(100, 30),
-		focus:          focusList,
-		filterNotebook: strings.TrimSpace(opts.InitialNotebook),
-		searchInput:    search,
-		editor:         ed,
-		modal:          modalState{kind: modalNone},
+		settingsStore:      settingsStore,
+		vault:              v,
+		vaultPath:          vp,
+		opts:               opts,
+		styles:             st,
+		layout:             computeLayout(100, 30),
+		focus:              focusList,
+		showNotebookPrefix: true,
+		showLineNumbers:    false,
+		filterNotebook:     strings.TrimSpace(opts.InitialNotebook),
+		searchInput:        search,
+		editor:             ed,
+		history:            newEditorHistory(),
+		find:               newFindState(p, opts.DisableCursorBlink),
+		modal:              modalState{kind: modalNone},
+	}
+	if settingsStore != nil {
+		if cfg, err := settingsStore.Load(); err == nil {
+			m.showNotebookPrefix = cfg.ShowNotebookPrefixEnabled()
+			m.showLineNumbers = cfg.ShowLineNumbersEnabled()
+			m.editor.ShowLineNumbers = m.showLineNumbers
+		}
 	}
 	m.syncEditorSize()
 	if m.vault == nil {
@@ -129,19 +152,29 @@ func (m *Model) currentNote() *vault.Note {
 }
 
 func (m *Model) syncEditorToSelected() {
+	m.closeFindBar()
+	m.history.Reset()
 	n := m.currentNote()
 	if n == nil {
 		m.loadedNoteID = ""
 		m.loadedContent = ""
+		m.loadedHash = ""
 		m.editor.SetValue("")
 		m.dirty = false
 		return
 	}
 	m.loadedNoteID = n.ID
 	m.loadedContent = n.Content
+	m.loadedHash = vault.ContentHash(n.Content)
 	m.editor.SetValue(n.Content)
 	m.editor.CursorEnd()
 	m.dirty = false
+}
+
+func (m *Model) recomputeLayout() {
+	m.layout = computeLayoutWithZen(m.layout.width, m.layout.height, m.zenMode)
+	m.syncEditorSize()
+	m.clampListScroll()
 }
 
 func (m *Model) syncEditorSize() {
@@ -149,13 +182,31 @@ func (m *Model) syncEditorSize() {
 	if innerW < 10 {
 		innerW = 10
 	}
-	// Pane border (2) + note metadata header (2) + divider (1) = 5 lines.
-	innerH := m.layout.bodyHeight - 5
-	if innerH < 3 {
-		innerH = 3
+	outerInnerH := m.layout.bodyHeight - 2
+	if outerInnerH < 4 {
+		outerInnerH = 4
+	}
+	footerH := 0
+	if outerInnerH >= 6 {
+		footerH = 1
+	}
+	// Note metadata header (2) + divider (1) + find bar + editor info footer.
+	innerH := outerInnerH - 3 - m.find.barHeight() - footerH
+	if innerH < 1 {
+		innerH = 1
 	}
 	m.editor.SetWidth(innerW)
 	m.editor.SetHeight(innerH)
+
+	findInputW := innerW - 44
+	if findInputW > 28 {
+		findInputW = 28
+	}
+	if findInputW < 10 {
+		findInputW = 10
+	}
+	m.find.queryInput.Width = findInputW
+	m.find.replaceInput.Width = findInputW
 
 	searchW := m.layout.leftWidth - 7 // border (2) + horizontal padding (2) + prompt (2) + cursor (1)
 	if searchW < 6 {
@@ -212,13 +263,28 @@ func (m *Model) flushDirtyCmd() tea.Cmd {
 	}
 	content := m.editor.Value()
 	noteID := m.loadedNoteID
-	m.loadedContent = content
-	m.dirty = false
-	return saveNoteContentCmd(m.vault, noteID, content)
+	expectedHash := m.loadedHash
+	return saveNoteContentCheckedCmd(m.vault, noteID, content, expectedHash)
+}
+
+// saveOnQuit persists pending edits synchronously when exiting, falling back
+// to a conflict copy if the file on disk was changed externally.
+func (m *Model) saveOnQuit() {
+	if !m.dirty || m.loadedNoteID == "" || m.vault == nil {
+		return
+	}
+	content := m.editor.Value()
+	_, err := m.vault.UpdateNoteContentChecked(m.loadedNoteID, content, m.loadedHash)
+	if errors.Is(err, vault.ErrConflict) {
+		_, _ = m.vault.CreateConflictCopy(m.loadedNoteID, content)
+	}
 }
 
 func (m *Model) formatHeaderBadges() string {
 	var parts []string
+	if m.zenMode {
+		parts = append(parts, "[ZEN]")
+	}
 	if m.filterNotebook != "" {
 		parts = append(parts, fmt.Sprintf("[NB: %s]", m.filterNotebook))
 	}

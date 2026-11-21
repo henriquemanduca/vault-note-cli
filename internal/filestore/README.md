@@ -2,18 +2,18 @@
 
 ## Overview
 
-Resolve diretórios padrão por sistema operacional (XDG/macOS/Windows) para o banco SQLite de configurações (`vault-note-cli.db`) e oferece abertura nativa de pastas/arquivos com fallback seguro em ambientes headless/SSH.
+Resolve diretórios padrão por sistema operacional (XDG/macOS/Windows) para o arquivo de configuração YAML (`config.yaml`) e oferece abertura nativa de pastas/arquivos com fallback seguro em ambientes headless/SSH.
 
 ## Interface
 
-- `BaseDir() (string, error)`
-- `DefaultDBPath() (string, error)`
+- `ConfigDir() (string, error)`
+- `DefaultConfigPath() (string, error)`
 - `DefaultVaultSuggestion() string`
 - `OpenFolder(dir string) (OpenResult, error)` / `OpenFile(path string) (OpenResult, error)`
 
 ## Invariants
 
-- Convenções nativas: `$XDG_DATA_HOME/vault-note-cli` (fallback `~/.local/share/vault-note-cli`), `~/Library/Application Support/vault-note-cli` (macOS), `%LOCALAPPDATA%\vault-note-cli` (Windows).
+- Convenções nativas: `$XDG_CONFIG_HOME/vault-note-cli` (fallback `~/.config/vault-note-cli`), `~/Library/Application Support/vault-note-cli` (macOS), `%APPDATA%\vault-note-cli` (Windows).
 - Em sessões sem interface gráfica (`SSH_CONNECTION` ou sem `DISPLAY`/`WAYLAND_DISPLAY` no Linux), retorna `OpenResult{Path: ..., Opened: false}` sem falhar.
 
 ## Side Effects

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newTestVault(t *testing.T) *Vault {
@@ -41,31 +42,34 @@ func TestVaultNotebooksCRUDAndTrash(t *testing.T) {
 		t.Fatalf("expected ErrAlreadyExists, got %v", err)
 	}
 
-	// Invalid names rejected (traversal / hidden / separators).
-	for _, bad := range []string{"", "   ", ".hidden", "../escape", "a/b", `a\b`} {
+	// Invalid names rejected (traversal / hidden / separators / multiple words).
+	for _, bad := range []string{"", "   ", ".hidden", "../escape", "a/b", `a\b`, "two words", "meu\tcaderno"} {
 		if _, err := v.CreateNotebook(bad); !errors.Is(err, ErrInvalidInput) {
 			t.Fatalf("CreateNotebook(%q) err = %v, want ErrInvalidInput", bad, err)
 		}
 	}
 
-	// Rename notebook.
-	renamed, err := v.RenameNotebook("work", "Projects")
+	// Rename notebook (normalized to UPPERCASE).
+	renamed, err := v.RenameNotebook("work", "  Projects  ")
 	if err != nil {
 		t.Fatalf("RenameNotebook: %v", err)
 	}
-	if renamed.Name != "Projects" {
-		t.Fatalf("renamed = %+v", renamed)
+	if renamed.Name != "PROJECTS" {
+		t.Fatalf("renamed = %+v, want PROJECTS", renamed)
+	}
+	if _, err := v.RenameNotebook("PROJECTS", "two words"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("RenameNotebook multi-word err = %v, want ErrInvalidInput", err)
 	}
 
 	// Add a note inside notebook and verify non-empty delete requires force.
-	if _, err := v.CreateNote("Projects", "spec", "body"); err != nil {
+	if _, err := v.CreateNote("PROJECTS", "spec", "body"); err != nil {
 		t.Fatalf("CreateNote: %v", err)
 	}
-	if _, err := v.DeleteNotebook("Projects", false); !errors.Is(err, ErrNotEmpty) {
+	if _, err := v.DeleteNotebook("PROJECTS", false); !errors.Is(err, ErrNotEmpty) {
 		t.Fatalf("expected ErrNotEmpty without force, got %v", err)
 	}
 
-	trashRes, err := v.DeleteNotebook("Projects", true)
+	trashRes, err := v.DeleteNotebook("PROJECTS", true)
 	if err != nil {
 		t.Fatalf("DeleteNotebook force: %v", err)
 	}
@@ -74,6 +78,18 @@ func TestVaultNotebooksCRUDAndTrash(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(trashRes.TrashPath, "spec.txt")); err != nil {
 		t.Fatalf("expected trashed note inside trashed folder: %v", err)
+	}
+
+	// Lowercase and surrounded by spaces is trimmed and uppercased.
+	nbLower, err := v.CreateNotebook("  estudos  ")
+	if err != nil {
+		t.Fatalf("CreateNotebook trimmed lowercase: %v", err)
+	}
+	if nbLower.Name != "ESTUDOS" {
+		t.Fatalf("CreateNotebook('  estudos  ') = %q, want ESTUDOS", nbLower.Name)
+	}
+	if _, err := v.DeleteNotebook("ESTUDOS", false); err != nil {
+		t.Fatalf("DeleteNotebook ESTUDOS: %v", err)
 	}
 
 	// Trashed notebook must not show up in ListNotebooks.
@@ -244,5 +260,56 @@ func TestListNotesAlwaysAlphabeticalWithAndWithoutFilters(t *testing.T) {
 		if searched[i].ID != want {
 			t.Fatalf("searched[%d] = %q, want %q", i, searched[i].ID, want)
 		}
+	}
+}
+
+func TestUpdateNoteContentCheckedAndConflictCopy(t *testing.T) {
+	v := newTestVault(t)
+	fixed := time.Date(2026, 11, 21, 15, 30, 0, 0, time.Local)
+	v.now = func() time.Time { return fixed }
+
+	if _, err := v.CreateNotebook("WORK"); err != nil {
+		t.Fatalf("CreateNotebook: %v", err)
+	}
+	note, err := v.CreateNote("WORK", "Spec", "v1")
+	if err != nil {
+		t.Fatalf("CreateNote: %v", err)
+	}
+	h1 := ContentHash(note.Content)
+
+	// Matching hash succeeds.
+	updated, err := v.UpdateNoteContentChecked(note.ID, "v2", h1)
+	if err != nil || updated.Content != "v2" {
+		t.Fatalf("UpdateNoteContentChecked matching = (%+v, %v)", updated, err)
+	}
+
+	// Stale hash returns ErrConflict and leaves disk untouched.
+	if _, err := v.UpdateNoteContentChecked(note.ID, "v3-local", h1); !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected ErrConflict for stale hash, got %v", err)
+	}
+	onDisk, err := v.GetNote(note.ID)
+	if err != nil || onDisk.Content != "v2" {
+		t.Fatalf("disk content altered on conflict: (%+v, %v)", onDisk, err)
+	}
+
+	// Identical content succeeds even with stale hash (idempotent).
+	if _, err := v.UpdateNoteContentChecked(note.ID, "v2", h1); err != nil {
+		t.Fatalf("idempotent checked update failed: %v", err)
+	}
+
+	// CreateConflictCopy writes sibling in same notebook and avoids same-second collisions.
+	cp1, err := v.CreateConflictCopy(note.ID, "v3-local")
+	if err != nil {
+		t.Fatalf("CreateConflictCopy 1: %v", err)
+	}
+	if cp1.Notebook != "WORK" || cp1.Title != "Spec (conflito 20261121-153000)" || cp1.Content != "v3-local" {
+		t.Fatalf("unexpected conflict copy 1: %+v", cp1)
+	}
+	cp2, err := v.CreateConflictCopy(note.ID, "v4-local")
+	if err != nil {
+		t.Fatalf("CreateConflictCopy 2: %v", err)
+	}
+	if cp2.Title != "Spec (conflito 20261121-153000)-1" {
+		t.Fatalf("unexpected conflict copy 2 title: %q", cp2.Title)
 	}
 }

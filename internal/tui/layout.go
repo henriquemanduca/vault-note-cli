@@ -13,6 +13,7 @@ const (
 	layoutTooSmall layoutMode = iota
 	layoutNarrow
 	layoutMasterDetail
+	layoutZen
 )
 
 type layoutMetrics struct {
@@ -27,11 +28,33 @@ type layoutMetrics struct {
 // computeLayout resolves responsive breakpoints and enforces the 20% left / 80%
 // right master-detail split for standard terminals (>= 70 cols).
 func computeLayout(width, height int) layoutMetrics {
+	return computeLayoutWithZen(width, height, false)
+}
+
+// computeLayoutWithZen resolves responsive breakpoints, expanding the editor
+// pane to 100% width when zen is enabled.
+func computeLayoutWithZen(width, height int, zen bool) layoutMetrics {
 	if width < minTerminalWidth || height < minTerminalHeight {
 		return layoutMetrics{
 			mode:   layoutTooSmall,
 			width:  width,
 			height: height,
+		}
+	}
+
+	if zen {
+		// Top margin (1) + top bar (1) + status bar (1) = 3 lines reserved.
+		bodyH := height - 3
+		if bodyH < 6 {
+			bodyH = 6
+		}
+		return layoutMetrics{
+			mode:       layoutZen,
+			width:      width,
+			height:     height,
+			bodyHeight: bodyH,
+			leftWidth:  0,
+			rightWidth: width,
 		}
 	}
 

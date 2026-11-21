@@ -7,41 +7,41 @@ import (
 	"testing"
 )
 
-func TestBaseDirPerOS(t *testing.T) {
+func TestConfigDirPerOS(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", tmp)
-	t.Setenv("LOCALAPPDATA", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("APPDATA", tmp)
 
-	linuxDir, err := baseDirForOS("linux")
+	linuxDir, err := configDirForOS("linux")
 	if err != nil {
-		t.Fatalf("linux BaseDir: %v", err)
+		t.Fatalf("linux ConfigDir: %v", err)
 	}
 	if want := filepath.Join(tmp, "vault-note-cli"); linuxDir != want {
 		t.Fatalf("linux dir = %q, want %q", linuxDir, want)
 	}
 
-	winDir, err := baseDirForOS("windows")
+	winDir, err := configDirForOS("windows")
 	if err != nil {
-		t.Fatalf("windows BaseDir: %v", err)
+		t.Fatalf("windows ConfigDir: %v", err)
 	}
 	if want := filepath.Join(tmp, "vault-note-cli"); winDir != want {
 		t.Fatalf("windows dir = %q, want %q", winDir, want)
 	}
 
-	macDir, err := baseDirForOS("darwin")
+	macDir, err := configDirForOS("darwin")
 	if err != nil {
-		t.Fatalf("darwin BaseDir: %v", err)
+		t.Fatalf("darwin ConfigDir: %v", err)
 	}
 	if !strings.HasSuffix(macDir, filepath.Join("Library", "Application Support", "vault-note-cli")) {
 		t.Fatalf("unexpected darwin dir %q", macDir)
 	}
 
-	dbPath, err := DefaultDBPath()
+	cfgPath, err := DefaultConfigPath()
 	if err != nil {
-		t.Fatalf("DefaultDBPath: %v", err)
+		t.Fatalf("DefaultConfigPath: %v", err)
 	}
-	if !strings.HasSuffix(dbPath, filepath.Join("vault-note-cli", "vault-note-cli.db")) {
-		t.Fatalf("unexpected dbPath %q", dbPath)
+	if !strings.HasSuffix(cfgPath, filepath.Join("vault-note-cli", "config.yaml")) {
+		t.Fatalf("unexpected cfgPath %q", cfgPath)
 	}
 }
 

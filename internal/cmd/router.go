@@ -9,7 +9,7 @@ import (
 
 	"github.com/hmanduca/vault-note-cli/internal/buildinfo"
 	"github.com/hmanduca/vault-note-cli/internal/config"
-	"github.com/hmanduca/vault-note-cli/internal/db"
+	"github.com/hmanduca/vault-note-cli/internal/settings"
 )
 
 // Run is the single CLI entrypoint invoked by cmd/vault-note-cli/main.go.
@@ -30,7 +30,7 @@ func dispatch(stdCtx context.Context, rawArgs []string, stdin io.Reader, stdout,
 		return err
 	}
 
-	// Short-circuit version and help without opening DB or parsing .vaultnotecli.
+	// Short-circuit version and help without reading config.yaml or .vaultnotecli.
 	if len(args) > 0 {
 		switch args[0] {
 		case "version", "--version", "-v":
@@ -50,11 +50,10 @@ func dispatch(stdCtx context.Context, rawArgs []string, stdin io.Reader, stdout,
 		return fmt.Errorf("load workspace config: %w", err)
 	}
 
-	store, err := db.NewStore(gOpts.dbPath)
+	store, err := settings.NewStore(gOpts.configPath)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = store.Close() }()
 
 	vaultPath, err := resolveVaultPath(gOpts.vaultPath, cfg, store)
 	if err != nil {
@@ -62,16 +61,16 @@ func dispatch(stdCtx context.Context, rawArgs []string, stdin io.Reader, stdout,
 	}
 
 	c := &Context{
-		Ctx:       stdCtx,
-		Store:     store,
-		Config:    cfg,
-		DBPath:    store.Path(),
-		VaultPath: vaultPath,
-		Format:    gOpts.format,
-		Out:       stdout,
-		Err:       stderr,
-		In:        stdin,
-		Cwd:       cwd,
+		Ctx:        stdCtx,
+		Store:      store,
+		Config:     cfg,
+		ConfigPath: store.Path(),
+		VaultPath:  vaultPath,
+		Format:     gOpts.format,
+		Out:        stdout,
+		Err:        stderr,
+		In:         stdin,
+		Cwd:        cwd,
 	}
 
 	// No subcommand -> launch interactive TUI directly.
@@ -87,6 +86,10 @@ func dispatch(stdCtx context.Context, rawArgs []string, stdin io.Reader, stdout,
 		return dispatchNote(c, expanded[1:])
 	case "notebook":
 		return dispatchNotebook(c, expanded[1:])
+	case "template":
+		return dispatchTemplate(c, expanded[1:])
+	case "trash":
+		return dispatchTrash(c, expanded[1:])
 	case "config":
 		return dispatchConfig(c, expanded[1:])
 	default:
@@ -95,8 +98,8 @@ func dispatch(stdCtx context.Context, rawArgs []string, stdin io.Reader, stdout,
 }
 
 // resolveVaultPath applies explicit precedence:
-// --vault flag > VAULT_NOTE_CLI_VAULT env > .vaultnotecli VAULT_PATH > SQLite vault_path.
-func resolveVaultPath(flagVault string, cfg *config.Config, store *db.Store) (string, error) {
+// --vault flag > VAULT_NOTE_CLI_VAULT env > .vaultnotecli VAULT_PATH > config.yaml vault_path.
+func resolveVaultPath(flagVault string, cfg *config.Config, store *settings.Store) (string, error) {
 	if vp := strings.TrimSpace(flagVault); vp != "" {
 		return vp, nil
 	}

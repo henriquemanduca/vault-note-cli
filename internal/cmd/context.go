@@ -7,7 +7,7 @@ import (
 	"io"
 
 	"github.com/hmanduca/vault-note-cli/internal/config"
-	"github.com/hmanduca/vault-note-cli/internal/db"
+	"github.com/hmanduca/vault-note-cli/internal/settings"
 	"github.com/hmanduca/vault-note-cli/internal/vault"
 )
 
@@ -65,17 +65,17 @@ const (
 
 // Context carries injected runtime dependencies across CLI handlers.
 type Context struct {
-	Ctx       context.Context
-	Store     *db.Store
-	Config    *config.Config
-	DBPath    string
-	VaultPath string
-	vault     *vault.Vault
-	Format    OutputFormat
-	Out       io.Writer
-	Err       io.Writer
-	In        io.Reader
-	Cwd       string
+	Ctx        context.Context
+	Store      *settings.Store
+	Config     *config.Config
+	ConfigPath string
+	VaultPath  string
+	vault      *vault.Vault
+	Format     OutputFormat
+	Out        io.Writer
+	Err        io.Writer
+	In         io.Reader
+	Cwd        string
 }
 
 // RequireVault lazily opens and caches the configured filesystem vault.

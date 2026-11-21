@@ -7,7 +7,21 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 )
+
+// normalizeNotebookName trims whitespace, validates filename safety, rejects
+// multi-word names (any internal whitespace), and converts to UPPERCASE.
+func normalizeNotebookName(raw string) (string, error) {
+	name, err := validateName(raw, "notebook name")
+	if err != nil {
+		return "", err
+	}
+	if strings.IndexFunc(name, unicode.IsSpace) >= 0 {
+		return "", fmt.Errorf("%w: notebook name must be a single word (spaces are not allowed)", ErrInvalidInput)
+	}
+	return strings.ToUpper(name), nil
+}
 
 // ListNotebooks returns all visible 1st-level directories inside the vault root,
 // sorted alphabetically (case-insensitive), along with their .txt note counts.
@@ -75,8 +89,9 @@ func (v *Vault) GetNotebook(ref string) (Notebook, error) {
 }
 
 // CreateNotebook creates a new 1st-level folder inside the vault root.
+// Names are trimmed, restricted to a single word, and normalized to UPPERCASE.
 func (v *Vault) CreateNotebook(rawName string) (Notebook, error) {
-	name, err := validateName(rawName, "notebook name")
+	name, err := normalizeNotebookName(rawName)
 	if err != nil {
 		return Notebook{}, err
 	}
@@ -100,12 +115,13 @@ func (v *Vault) CreateNotebook(rawName string) (Notebook, error) {
 }
 
 // RenameNotebook renames an existing 1st-level notebook folder.
+// New names are trimmed, restricted to a single word, and normalized to UPPERCASE.
 func (v *Vault) RenameNotebook(oldRef, rawNewName string) (Notebook, error) {
 	nb, err := v.GetNotebook(oldRef)
 	if err != nil {
 		return Notebook{}, err
 	}
-	newName, err := validateName(rawNewName, "notebook name")
+	newName, err := normalizeNotebookName(rawNewName)
 	if err != nil {
 		return Notebook{}, err
 	}

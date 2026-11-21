@@ -9,6 +9,7 @@ var (
 	ErrInvalidInput  = errors.New("invalid input")
 	ErrNotEmpty      = errors.New("notebook is not empty")
 	ErrAmbiguous     = errors.New("ambiguous note reference")
+	ErrConflict      = errors.New("external modification conflict")
 )
 
 const (
@@ -56,4 +57,22 @@ type UpdateNoteInput struct {
 type TrashResult struct {
 	OriginalID string
 	TrashPath  string
+}
+
+// TrashItem represents a trashed file or empty directory inside <vault>/.trash/.
+type TrashItem struct {
+	ID        string // Canonical relative path inside .trash/ with forward slashes
+	Bucket    string // Top-level entry under .trash/ (usually UTC timestamp bucket)
+	RelPath   string // Relative path inside the bucket (or entry name if at .trash/ root)
+	IsDir     bool   // True for empty trashed directories (e.g., an empty notebook)
+	SizeBytes int64  // File size in bytes (0 for empty directories)
+	TrashedAt string // RFC3339 UTC timestamp from bucket name or ModTime fallback
+	Path      string // Absolute path on disk
+}
+
+// TrashEmptyResult summarizes a permanent cleanup of <vault>/.trash/.
+type TrashEmptyResult struct {
+	RemovedItems int
+	RemovedBytes int64
+	TrashDir     string
 }

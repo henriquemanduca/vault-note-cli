@@ -9,15 +9,15 @@ import (
 
 const appDirName = "vault-note-cli"
 
-// BaseDir resolves the platform-standard user data directory for vault-note-cli:
-//   - Linux/BSD: $XDG_DATA_HOME/vault-note-cli (fallback: ~/.local/share/vault-note-cli)
+// ConfigDir resolves the platform-standard user configuration directory for vault-note-cli:
+//   - Linux/BSD: $XDG_CONFIG_HOME/vault-note-cli (fallback: ~/.config/vault-note-cli)
 //   - macOS:     ~/Library/Application Support/vault-note-cli
-//   - Windows:   %LOCALAPPDATA%\vault-note-cli
-func BaseDir() (string, error) {
-	return baseDirForOS(runtime.GOOS)
+//   - Windows:   %APPDATA%\vault-note-cli (fallback: os.UserConfigDir)
+func ConfigDir() (string, error) {
+	return configDirForOS(runtime.GOOS)
 }
 
-func baseDirForOS(goos string) (string, error) {
+func configDirForOS(goos string) (string, error) {
 	switch goos {
 	case "darwin":
 		home, err := os.UserHomeDir()
@@ -26,8 +26,8 @@ func baseDirForOS(goos string) (string, error) {
 		}
 		return filepath.Join(home, "Library", "Application Support", appDirName), nil
 	case "windows":
-		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-			return filepath.Join(localAppData, appDirName), nil
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			return filepath.Join(appData, appDirName), nil
 		}
 		cfg, err := os.UserConfigDir()
 		if err != nil {
@@ -35,24 +35,24 @@ func baseDirForOS(goos string) (string, error) {
 		}
 		return filepath.Join(cfg, appDirName), nil
 	default:
-		if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 			return filepath.Join(xdg, appDirName), nil
 		}
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("resolve home dir: %w", err)
 		}
-		return filepath.Join(home, ".local", "share", appDirName), nil
+		return filepath.Join(home, ".config", appDirName), nil
 	}
 }
 
-// DefaultDBPath returns <BaseDir>/vault-note-cli.db.
-func DefaultDBPath() (string, error) {
-	base, err := BaseDir()
+// DefaultConfigPath returns <ConfigDir>/config.yaml.
+func DefaultConfigPath() (string, error) {
+	dir, err := ConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "vault-note-cli.db"), nil
+	return filepath.Join(dir, "config.yaml"), nil
 }
 
 // DefaultVaultSuggestion returns a suggested path displayed as placeholder in

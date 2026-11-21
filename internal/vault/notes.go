@@ -1,6 +1,8 @@
 package vault
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -280,9 +282,58 @@ func (v *Vault) CreateNote(notebook, rawTitle, content string) (Note, error) {
 	return loaded, nil
 }
 
+// ContentHash returns a deterministic SHA-256 hex digest of a note's body.
+// Used for optimistic concurrency checks against external disk edits.
+func ContentHash(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
+}
+
 // UpdateNoteContent atomically overwrites the body of an existing note .txt file.
 func (v *Vault) UpdateNoteContent(id, content string) (Note, error) {
 	return v.UpdateNote(id, UpdateNoteInput{Content: &content})
+}
+
+// UpdateNoteContentChecked atomically overwrites the body of an existing note
+// only if the on-disk content still matches expectedHash (or already equals
+// content). When expectedHash is non-empty and the file on disk diverged, it
+// returns ErrConflict without modifying the file.
+func (v *Vault) UpdateNoteContentChecked(id, content, expectedHash string) (Note, error) {
+	current, err := v.GetNote(id)
+	if err != nil {
+		return Note{}, err
+	}
+	if expectedHash != "" && ContentHash(current.Content) != expectedHash && current.Content != content {
+		return Note{}, fmt.Errorf("%w: note %q was modified externally", ErrConflict, current.ID)
+	}
+	if err := writeFileAtomic(current.Path, content); err != nil {
+		return Note{}, fmt.Errorf("write note %q: %w", current.FileName, err)
+	}
+	return v.loadNoteFile(current.Notebook, current.FileName)
+}
+
+// CreateConflictCopy saves content as a sibling note next to id so conflicting
+// edits are preserved without overwriting external changes.
+func (v *Vault) CreateConflictCopy(id, content string) (Note, error) {
+	orig, err := v.GetNote(id)
+	if err != nil {
+		return Note{}, err
+	}
+	stamp := v.clock().Format("20060102-150405")
+	baseTitle := fmt.Sprintf("%s (conflito %s)", orig.Title, stamp)
+	for attempt := 0; ; attempt++ {
+		title := baseTitle
+		if attempt > 0 {
+			title = fmt.Sprintf("%s-%d", baseTitle, attempt)
+		}
+		created, createErr := v.CreateNote(orig.Notebook, title, content)
+		if createErr == nil {
+			return created, nil
+		}
+		if !errors.Is(createErr, ErrAlreadyExists) {
+			return Note{}, createErr
+		}
+	}
 }
 
 // UpdateNote updates content, renames the .txt file, and/or moves it across notebooks.

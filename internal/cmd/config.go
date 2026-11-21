@@ -4,10 +4,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
-	"github.com/hmanduca/vault-note-cli/internal/db"
 	"github.com/hmanduca/vault-note-cli/internal/filestore"
+	"github.com/hmanduca/vault-note-cli/internal/settings"
 	"github.com/hmanduca/vault-note-cli/internal/vault"
 )
 
@@ -39,7 +40,7 @@ type configGetArgs struct {
 type configGetResult struct {
 	singleKey string
 	singleVal string
-	settings  []db.Setting
+	items     []settings.Setting
 	noHeader  bool
 }
 
@@ -73,7 +74,7 @@ func (configGetAction) Execute(ctx *Context, in configGetArgs) (configGetResult,
 			return configGetResult{}, err
 		}
 		if !ok {
-			return configGetResult{}, fmt.Errorf("%w: %q", db.ErrNotFound, in.key)
+			return configGetResult{}, fmt.Errorf("%w: %q", settings.ErrNotFound, in.key)
 		}
 		return configGetResult{singleKey: in.key, singleVal: val}, nil
 	}
@@ -81,7 +82,7 @@ func (configGetAction) Execute(ctx *Context, in configGetArgs) (configGetResult,
 	if err != nil {
 		return configGetResult{}, err
 	}
-	return configGetResult{settings: all, noHeader: in.noHeader}, nil
+	return configGetResult{items: all, noHeader: in.noHeader}, nil
 }
 
 func (configGetAction) Format(ctx *Context, w io.Writer, res configGetResult) error {
@@ -89,11 +90,11 @@ func (configGetAction) Format(ctx *Context, w io.Writer, res configGetResult) er
 		_, err := fmt.Fprintln(w, res.singleVal)
 		return err
 	}
-	rows := make([][]string, 0, len(res.settings))
-	for _, s := range res.settings {
-		rows = append(rows, []string{s.Key, s.Value, s.UpdatedAt})
+	rows := make([][]string, 0, len(res.items))
+	for _, s := range res.items {
+		rows = append(rows, []string{s.Key, s.Value})
 	}
-	return writeTabular(w, ctx.Format, []string{"key", "value", "updated_at"}, rows, res.noHeader)
+	return writeTabular(w, ctx.Format, []string{"key", "value"}, rows, res.noHeader)
 }
 
 // --- config set ---
@@ -113,7 +114,7 @@ type configSetAction struct{}
 func (configSetAction) Parse(_ *Context, args []string) (configSetArgs, error) {
 	_, posArgs := splitFlagsAndPosArgs(args, nil)
 	if len(posArgs) != 2 {
-		return configSetArgs{}, UsageError("usage: vault-note-cli config set vault_path <dir>")
+		return configSetArgs{}, UsageError("usage: vault-note-cli config set <key> <value>")
 	}
 	return configSetArgs{
 		key:   strings.TrimSpace(posArgs[0]),
@@ -123,18 +124,39 @@ func (configSetAction) Parse(_ *Context, args []string) (configSetArgs, error) {
 
 func (configSetAction) Execute(ctx *Context, in configSetArgs) (configSetResult, error) {
 	switch strings.ToLower(in.key) {
-	case db.KeyVaultPath:
-		abs, err := vault.EnsureDir(in.value)
+	case settings.KeyVaultPath:
+		v, err := vault.Open(in.value)
 		if err != nil {
 			return configSetResult{}, err
 		}
-		saved, err := ctx.Store.SetVaultPath(abs)
+		if _, err := v.SeedDefaultTemplatesIfAbsent(); err != nil {
+			return configSetResult{}, err
+		}
+		saved, err := ctx.Store.SetVaultPath(v.Root())
 		if err != nil {
 			return configSetResult{}, err
 		}
-		return configSetResult{key: db.KeyVaultPath, value: saved}, nil
+		return configSetResult{key: settings.KeyVaultPath, value: saved}, nil
+	case settings.KeyShowNotebookPrefix:
+		enabled, err := settings.ParseBool(in.value)
+		if err != nil {
+			return configSetResult{}, UsageError("%v", err)
+		}
+		if err := ctx.Store.SetShowNotebookPrefix(enabled); err != nil {
+			return configSetResult{}, err
+		}
+		return configSetResult{key: settings.KeyShowNotebookPrefix, value: strconv.FormatBool(enabled)}, nil
+	case settings.KeyShowLineNumbers:
+		enabled, err := settings.ParseBool(in.value)
+		if err != nil {
+			return configSetResult{}, UsageError("%v", err)
+		}
+		if err := ctx.Store.SetShowLineNumbers(enabled); err != nil {
+			return configSetResult{}, err
+		}
+		return configSetResult{key: settings.KeyShowLineNumbers, value: strconv.FormatBool(enabled)}, nil
 	default:
-		return configSetResult{}, UsageError("unknown setting key %q (supported: %s)", in.key, db.KeyVaultPath)
+		return configSetResult{}, UsageError("unknown setting key %q (supported: %s, %s, %s)", in.key, settings.KeyVaultPath, settings.KeyShowNotebookPrefix, settings.KeyShowLineNumbers)
 	}
 }
 

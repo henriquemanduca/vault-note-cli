@@ -12,6 +12,16 @@ import (
 // Vault manages notebooks (1st-level folders) and notes (.txt files) under a root directory.
 type Vault struct {
 	root string
+	// now is the injectable clock used by template placeholders; nil means time.Now.
+	now func() time.Time
+}
+
+// clock returns the current time from the injectable clock, defaulting to time.Now.
+func (v *Vault) clock() time.Time {
+	if v.now == nil {
+		return time.Now()
+	}
+	return v.now()
 }
 
 // ExpandPath expands leading ~/ (or ~) and returns a clean absolute path.
@@ -66,7 +76,7 @@ func Open(root string) (*Vault, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Vault{root: abs}, nil
+	return &Vault{root: abs, now: time.Now}, nil
 }
 
 // Root returns the absolute path of the vault root directory.

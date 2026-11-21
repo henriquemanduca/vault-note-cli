@@ -1,16 +1,18 @@
 package cmd
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 )
 
 type globalOpts struct {
-	format    OutputFormat
-	dbPath    string
-	vaultPath string
+	format     OutputFormat
+	configPath string
+	vaultPath  string
 }
 
-// extractGlobalFlags strips transversal flags (-F/--format, --vault, and hidden --db)
+// extractGlobalFlags strips transversal flags (-F/--format, --vault, and --config)
 // from anywhere in args before `--`, returning the remaining arguments.
 func extractGlobalFlags(args []string) (globalOpts, []string, error) {
 	opts := globalOpts{format: FormatTSV}
@@ -46,14 +48,14 @@ func extractGlobalFlags(args []string) (globalOpts, []string, error) {
 				return opts, nil, err
 			}
 			opts.format = f
-		case arg == "--db":
+		case arg == "--config":
 			if i+1 >= len(args) {
-				return opts, nil, UsageError("flag --db requires a path")
+				return opts, nil, UsageError("flag --config requires a YAML file path")
 			}
 			i++
-			opts.dbPath = args[i]
-		case strings.HasPrefix(arg, "--db="):
-			opts.dbPath = strings.TrimPrefix(arg, "--db=")
+			opts.configPath = args[i]
+		case strings.HasPrefix(arg, "--config="):
+			opts.configPath = strings.TrimPrefix(arg, "--config=")
 		case arg == "--vault":
 			if i+1 >= len(args) {
 				return opts, nil, UsageError("flag --vault requires a directory path")
@@ -120,6 +122,26 @@ func (o *optionalStringFlag) String() string {
 func (o *optionalStringFlag) Set(val string) error {
 	o.set = true
 	o.value = val
+	return nil
+}
+
+// optionalIntFlag distinguishes between omitted flag vs explicitly set to 0.
+type optionalIntFlag struct {
+	set   bool
+	value int
+}
+
+func (o *optionalIntFlag) String() string {
+	return strconv.Itoa(o.value)
+}
+
+func (o *optionalIntFlag) Set(val string) error {
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return fmt.Errorf("expected an integer, got %q", val)
+	}
+	o.set = true
+	o.value = n
 	return nil
 }
 

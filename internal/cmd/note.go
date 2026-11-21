@@ -26,6 +26,8 @@ func dispatchNote(ctx *Context, args []string) error {
 		return RunAction(ctx, noteUpdateAction{}, args[1:])
 	case "edit":
 		return RunAction(ctx, noteEditAction{}, args[1:])
+	case "insert", "ins":
+		return RunAction(ctx, noteInsertAction{}, args[1:])
 	case "delete", "del", "rm", "remove":
 		return RunAction(ctx, noteDeleteAction{}, args[1:])
 	case "search", "find":
@@ -41,6 +43,8 @@ type noteAddArgs struct {
 	title    string
 	content  string
 	notebook string
+	template string
+	open     bool
 }
 
 type noteAddAction struct{}
@@ -49,25 +53,43 @@ func (noteAddAction) Parse(ctx *Context, args []string) (noteAddArgs, error) {
 	flagArgs, posArgs := splitFlagsAndPosArgs(args, map[string]bool{
 		"b": true, "notebook": true,
 		"c": true, "content": true,
+		"t": true, "template": true,
 	})
 	fs := flag.NewFlagSet("note add", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
 	var nb optionalStringFlag
+	var tpl optionalStringFlag
 	var contentFlag string
 	var fromStdin bool
+	var openEditor bool
 
 	fs.Var(&nb, "b", "notebook folder name")
 	fs.Var(&nb, "notebook", "notebook folder name")
 	fs.StringVar(&contentFlag, "c", "", "note content")
 	fs.StringVar(&contentFlag, "content", "", "note content")
 	fs.BoolVar(&fromStdin, "stdin", false, "read note content from stdin")
+	fs.Var(&tpl, "t", "create the note from a template")
+	fs.Var(&tpl, "template", "create the note from a template")
+	fs.BoolVar(&openEditor, "o", false, "open the new note in $EDITOR")
+	fs.BoolVar(&openEditor, "open", false, "open the new note in $EDITOR")
 
 	if err := fs.Parse(flagArgs); err != nil {
 		return noteAddArgs{}, UsageError("%v", err)
 	}
 	if len(posArgs) < 1 {
-		return noteAddArgs{}, UsageError("usage: vault-note-cli note add <title> [content] [-b <notebook>] [-c <content>] [--stdin]")
+		return noteAddArgs{}, UsageError("usage: vault-note-cli note add <title> [content] [-b <notebook>] [-c <content>] [--stdin] [-t <template>] [--open]")
+	}
+
+	templateName := ""
+	if tpl.set {
+		templateName = strings.TrimSpace(tpl.value)
+		switch {
+		case templateName == "":
+			return noteAddArgs{}, UsageError("flag --template requires a template name")
+		case contentFlag != "" || len(posArgs) >= 2 || fromStdin:
+			return noteAddArgs{}, UsageError("flag --template cannot be combined with inline content, --content or --stdin")
+		}
 	}
 
 	content := contentFlag
@@ -86,6 +108,8 @@ func (noteAddAction) Parse(ctx *Context, args []string) (noteAddArgs, error) {
 		title:    posArgs[0],
 		content:  content,
 		notebook: resolveNotebookDefault(ctx, nb),
+		template: templateName,
+		open:     openEditor,
 	}, nil
 }
 
@@ -94,7 +118,24 @@ func (noteAddAction) Execute(ctx *Context, in noteAddArgs) (vault.Note, error) {
 	if err != nil {
 		return vault.Note{}, err
 	}
-	return v.CreateNote(in.notebook, in.title, in.content)
+
+	var note vault.Note
+	if in.template != "" {
+		note, err = v.CreateNoteFromTemplate(in.notebook, in.title, in.template)
+	} else {
+		note, err = v.CreateNote(in.notebook, in.title, in.content)
+	}
+	if err != nil {
+		return vault.Note{}, err
+	}
+	if !in.open {
+		return note, nil
+	}
+
+	if err := openPathInEditor(ctx, note.Path); err != nil {
+		return vault.Note{}, err
+	}
+	return v.GetNote(note.ID)
 }
 
 func (noteAddAction) Format(_ *Context, w io.Writer, n vault.Note) error {
@@ -434,14 +475,8 @@ func (noteEditAction) Execute(ctx *Context, in noteEditArgs) (vault.Note, error)
 		return vault.Note{}, err
 	}
 
-	// Open the real .txt file directly in $EDITOR.
-	ed := tui.ResolveEditor()
-	cmd := exec.CommandContext(ctx.Ctx, ed[0], append(ed[1:], note.Path)...)
-	cmd.Stdin = ctx.In
-	cmd.Stdout = ctx.Out
-	cmd.Stderr = ctx.Err
-	if err := cmd.Run(); err != nil {
-		return vault.Note{}, fmt.Errorf("editor failed: %w", err)
+	if err := openPathInEditor(ctx, note.Path); err != nil {
+		return vault.Note{}, err
 	}
 	return v.GetNote(note.ID)
 }
@@ -495,5 +530,153 @@ func (noteDeleteAction) Execute(ctx *Context, in noteDeleteArgs) (vault.TrashRes
 
 func (noteDeleteAction) Format(_ *Context, w io.Writer, res vault.TrashResult) error {
 	_, err := fmt.Fprintf(w, "Moved note %s to %s\n", res.OriginalID, res.TrashPath)
+	return err
+}
+
+// openPathInEditor launches the user's $EDITOR on a file path, wiring the CLI streams.
+func openPathInEditor(ctx *Context, path string) error {
+	ed := tui.ResolveEditor()
+	cmd := exec.CommandContext(ctx.Ctx, ed[0], append(ed[1:], path)...)
+	cmd.Stdin = ctx.In
+	cmd.Stdout = ctx.Out
+	cmd.Stderr = ctx.Err
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("editor failed: %w", err)
+	}
+	return nil
+}
+
+// --- note insert (template into an existing note) ---
+
+type noteInsertArgs struct {
+	ref      string
+	notebook string
+	template string
+	prepend  bool
+	at       optionalIntFlag
+	print    bool
+	open     bool
+}
+
+type noteInsertResult struct {
+	note     vault.Note
+	template string
+	printed  bool
+	content  string
+}
+
+type noteInsertAction struct{}
+
+func (noteInsertAction) Parse(ctx *Context, args []string) (noteInsertArgs, error) {
+	flagArgs, posArgs := splitFlagsAndPosArgs(args, map[string]bool{
+		"b": true, "notebook": true,
+		"t": true, "template": true,
+		"at": true,
+	})
+	fs := flag.NewFlagSet("note insert", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	var nb optionalStringFlag
+	var tpl optionalStringFlag
+	var out noteInsertArgs
+	fs.Var(&nb, "b", "notebook context")
+	fs.Var(&nb, "notebook", "notebook context")
+	fs.Var(&tpl, "t", "template name")
+	fs.Var(&tpl, "template", "template name")
+	fs.BoolVar(&out.prepend, "prepend", false, "insert at the start of the note")
+	fs.Var(&out.at, "at", "insert at rune offset (clamped)")
+	fs.BoolVar(&out.print, "print", false, "print the composed note without writing")
+	fs.BoolVar(&out.open, "o", false, "open the note in $EDITOR after inserting")
+	fs.BoolVar(&out.open, "open", false, "open the note in $EDITOR after inserting")
+
+	if err := fs.Parse(flagArgs); err != nil {
+		return noteInsertArgs{}, UsageError("%v", err)
+	}
+	if len(posArgs) != 1 {
+		return noteInsertArgs{}, UsageError("usage: vault-note-cli note insert <ref> -t <template> [--prepend|--at <N>] [--print] [--open] [-b <notebook>]")
+	}
+	if !tpl.set || strings.TrimSpace(tpl.value) == "" {
+		return noteInsertArgs{}, UsageError("flag --template is required (e.g. -t checklist)")
+	}
+	if out.prepend && out.at.set {
+		return noteInsertArgs{}, UsageError("flags --prepend and --at cannot be combined")
+	}
+	if out.at.set && out.at.value < 0 {
+		return noteInsertArgs{}, UsageError("flag --at requires a non-negative rune offset")
+	}
+	if out.print && out.open {
+		return noteInsertArgs{}, UsageError("flags --print and --open cannot be combined")
+	}
+
+	out.ref = posArgs[0]
+	out.notebook = resolveNotebookDefault(ctx, nb)
+	out.template = strings.TrimSpace(tpl.value)
+	return out, nil
+}
+
+func (in noteInsertArgs) insertOptions() vault.InsertOptions {
+	opts := vault.InsertOptions{Mode: vault.InsertAppend}
+	switch {
+	case in.at.set:
+		opts.Mode = vault.InsertAtRune
+		opts.RuneOffset = in.at.value
+	case in.prepend:
+		opts.Mode = vault.InsertPrepend
+	}
+	return opts
+}
+
+func (noteInsertAction) Execute(ctx *Context, in noteInsertArgs) (noteInsertResult, error) {
+	v, err := ctx.RequireVault()
+	if err != nil {
+		return noteInsertResult{}, err
+	}
+	note, err := v.ResolveNote(in.ref, in.notebook)
+	if err != nil {
+		return noteInsertResult{}, err
+	}
+
+	if in.print {
+		rendered, err := v.RenderTemplateFor(note, in.template)
+		if err != nil {
+			return noteInsertResult{}, err
+		}
+		return noteInsertResult{
+			note:     note,
+			template: in.template,
+			printed:  true,
+			content:  vault.InsertSnippet(note.Content, rendered, in.insertOptions()),
+		}, nil
+	}
+
+	updated, err := v.InsertTemplate(note.ID, in.template, in.insertOptions())
+	if err != nil {
+		return noteInsertResult{}, err
+	}
+	if in.open {
+		if err := openPathInEditor(ctx, updated.Path); err != nil {
+			return noteInsertResult{}, err
+		}
+		if reopened, err := v.GetNote(updated.ID); err == nil {
+			updated = reopened
+		}
+	}
+	return noteInsertResult{note: updated, template: in.template}, nil
+}
+
+func (noteInsertAction) Format(ctx *Context, w io.Writer, res noteInsertResult) error {
+	if res.printed {
+		if _, err := fmt.Fprint(w, res.content); err != nil {
+			return err
+		}
+		if res.content != "" && !strings.HasSuffix(res.content, "\n") {
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
+		}
+		_, err := fmt.Fprintln(ctx.Err, "(dry-run, nota não modificada)")
+		return err
+	}
+	_, err := fmt.Fprintf(w, "Inserted template %s into %s\n", res.template, res.note.ID)
 	return err
 }

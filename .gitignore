@@ -6,11 +6,6 @@ dist/
 coverage.out
 coverage.html
 
-# Local databases
-*.db
-*.db-wal
-*.db-shm
-
 # IDE
 .idea/
 .vscode/
