@@ -1,0 +1,16 @@
+# Build artifacts
+bin/
+dist/
+
+# Coverage and test outputs
+coverage.out
+coverage.html
+
+# Local databases
+*.db
+*.db-wal
+*.db-shm
+
+# IDE
+.idea/
+.vscode/
